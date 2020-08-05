@@ -1,0 +1,526 @@
+
+
+library(dplyr)
+library(tidyr)
+library(measurements)
+library(sqldf)
+library(ggplot2)
+library(RColorBrewer)
+library(plotly)
+library(reshape2)
+library(kableExtra)
+
+
+'''{r processing}
+## Create additional functions
+
+# Mode average
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+convertHeight <- function(x) {
+    x <- as.character(x)
+    split <- strsplit(x, "-")
+    feet <- as.numeric(split[[1]][1])
+    inch <- as.numeric(split[[1]][2])
+    round(conv_unit(feet, "ft", "cm") + conv_unit(inch, "inch", "cm"),0)
+}
+
+# Load the data.
+
+NBA <- read.csv("Seasons_Stats.csv")[, c(2:9, 11:20, 32:53)]
+PlayerData <- read.csv("player_data.csv")[, c(1:3, 5:6)]
+
+# Remove NA rows
+NBA <- NBA %>% filter(!is.na(Year), !is.na(Player))
+
+# Remove Team = TOT (which indicates total, when player played in more than 1 team in a season)
+NBA <- NBA[NBA$Tm != "TOT",]
+
+# Remove of "*" which indicates a player is a member of NBA Hall of Fame
+NBA$Player <- gsub("\\*$", "", NBA$Player)
+
+# Fix player data
+PlayerData[2143, 4] = as.factor("6-2")
+PlayerData[2143, 5] = 190
+NBA[21304, 3] = "SG"
+
+#Renaming some columns of the dataset
+
+colnames(PlayerData) <- c("player", "YearStart", "YearEnd", "Height-feet", "Weight-lbs")
+
+# Merging data
+
+NBA <- sqldf("SELECT * FROM NBA JOIN PlayerData ON NBA.Player = PlayerData.player 
+      WHERE NBA.Year >= PlayerData.YearStart AND NBA.Year <= PlayerData.YearEnd")
+
+# Fixing Position
+
+# In here, for simplicity and aesthetical purpose, I arbitrarily framed up all the players into the standard five position used today and then color-coded them:
+
+NBA$Pos[NBA$Pos == "C-F"] <- "C"
+NBA$Pos[NBA$Pos == "F-C"] <- "PF"
+NBA$Pos[NBA$Pos == "F"] <- "PF"
+NBA$Pos[NBA$Pos == "F-G"] <- "SF"
+NBA$Pos[NBA$Pos == "G"] <- "SG"
+NBA$Pos[NBA$Pos == "G-F"] <- "SF"
+NBA$Pos <- factor(NBA$Pos, levels = c("C", "PF", "SF", "SG", "PG"))
+PosColorCode <- c("C"="#FF0000", "PF"="#FFA500", "SF"="#DDDD00" ,"SG"="#0000FF", "PG"="#32CD32")
+
+# Create new variables:
+
+NBA <- NBA %>%
+    rowwise() %>%
+    mutate(Height = convertHeight(`Height-feet`),
+           Weight = round(conv_unit(`Weight-lbs`, "lbs", "kg"),0),
+           BMI = round(Weight / (Height / 100)^2, 2),
+           Born = Year - Age,
+           ORpG = ORB / G,
+           DRpG = DRB / G,
+           RpG = TRB / G,
+           ApG = AST / G,
+           SpG = STL / G,
+           BpG = BLK / G,
+           TpG = TOV / G,
+           PpG = PTS / G,
+           Position = cell_spec(Pos,
+                            color = "white",
+                            align = "c",
+                            background = factor(Pos, c("C", "PF", "SF", "SG", "PG"),
+                                                PosColorCode)))
+
+# Arrange the table.
+
+NBA <- NBA %>%
+    select(Year:MP, YearStart:BMI, "Born", FG:PTS, TS.:TOV., ORpG:PpG, "Position", -c("Height-feet", "Weight-lbs"))
+
+# Create duplicate table with normalized stats.
+
+NBA_Scaled <- NBA %>% mutate_at(vars(c(G:MP, FG:PpG)), scale)
+
+NBA_Scaled <- NBA
+NBA_Scaled[, c(6:8, 15:54)] <- scale(NBA[, c(6:8, 15:54)])
+'''{r teamplayer, warning=FALSE}
+Team_Player <- NBA %>%
+  group_by(Year) %>%
+  summarise(nPlayers = n_distinct(Player),
+            nTeams = n_distinct(Tm),
+            nGames = max(G),
+            Players_per_Team = round(nPlayers/nTeams, 2)) 
+
+Team_Player %>%
+    kable(escape = FALSE, align="c", caption = "Players, Teams and Games") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T) %>%
+    scroll_box(width = "100%", height = "300px")
+'''''''{r TeamGrowth, fig.width = 9, fig.height=5}
+Team_Player %>%
+    ggplot() +
+    geom_line(aes(Year, nTeams, linetype = "Trend line")) +
+    ggtitle("Number of NBA Teams by Year") +
+    geom_hline(aes(yintercept = mean(Team_Player$nTeams), linetype = "Average line"),
+               col = "red",
+               alpha = 0.5) +
+    scale_x_continuous(breaks = seq(1950, 2017, 10)) +
+    scale_linetype_manual(name = "", values = c(2, 1), guide = guide_legend(reverse = TRUE)) +
+    ylab("Number of Teams") +
+    theme(legend.position="bottom")
+'''{r PlayerGrowth, fig.width = 9, fig.height=5}
+Team_Player %>%
+    ggplot(aes(Year, nPlayers, fill=nPlayers)) +
+    geom_bar(stat = "identity") +
+    ggtitle("Number of NBA Players by Year") +
+    geom_hline(aes(yintercept = mean(Team_Player$nPlayers), linetype = "Average line"),
+               col = "red",
+               alpha = 0.5) +
+    scale_fill_gradient(low = "green", high = "red") +
+    scale_x_continuous(breaks = seq(1950, 2017, 10)) +
+    scale_linetype_manual(name = "", values = 2) +
+    ylab("Number of Players") +
+    theme(legend.position="bottom")
+
+
+'''{r HeightDist, fig.width = 9, fig.height=5}
+HeightMean <- mean(NBA$Height)
+HeightSD <- sd(NBA$Height)
+
+NBA %>% ggplot(aes(Height, fill=TRUE)) +
+    geom_density() +
+    scale_x_continuous(breaks = seq(160, 240, 10)) +
+    geom_vline(aes(xintercept = HeightMean, linetype = "Average height of NBA players"),
+               col = "red",
+               alpha = 0.8) +
+    geom_vline(aes(xintercept = 177, linetype = "Average height of American male"),
+               col = "blue",
+               alpha = 0.8) +
+    geom_vline(xintercept = c(seq(HeightMean, 240, HeightSD), seq(HeightMean, 160, -HeightSD)),
+               col = "blue",
+               alpha = 0.3,
+               linetype = 5) +
+    scale_linetype_manual(name = "", values = c(1, 1)) +
+    guides(fill=FALSE) +
+    theme(legend.position="bottom")
+'''{r shortest, warning = FALSE}
+NBA %>%
+    group_by(Height, Player) %>%
+    summarise(Pos = getmode(Position),
+              YearActive = paste(mean(YearStart), "-", mean(YearEnd)),
+              Team = getmode(Tm),
+              Games = sum(G),
+              PPG = round(sum(PTS)/sum(G), 2)) %>%
+    arrange(Height) %>%
+    head() %>%
+    kable(escape=F, align="c", caption = "Shortest Players") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(1, bold = T, color = "white", background = "#777777")
+    NBA %>%
+    group_by(Height, Player) %>%
+    summarise(Pos = getmode(Position),
+              YearActive = paste(mean(YearStart), "-", mean(YearEnd)),
+              Team = getmode(Tm),
+              Games = sum(G),
+              PPG = round(sum(PTS)/sum(G), 2)) %>%
+    arrange(desc(Height)) %>%
+    head(n=8) %>%
+    kable(escape=F, align="c", caption = "Tallest Players") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(1, bold = T, color = "white", background = "#777777")
+
+
+'''{r heightpos, warning=FALSE}
+NBA %>%
+    group_by(Pos) %>%
+    summarise(MinHeight = min(Height),
+              MaxHeight = max(Height),
+              MedianHeight = median(Height),
+              ModeHeight = getmode(Height),
+              MeanHeight = round(mean(`Height`), 2)) %>%
+    mutate(Pos = cell_spec(Pos,
+                            color = "white",
+                            align = "c",
+                            background = factor(Pos, c("C", "PF", "SF", "SG", "PG"),
+                                                PosColorCode))) %>%
+    kable("html", escape=F, align="c", caption = "Height: Averages and Range by Position") %>%
+    kable_styling(bootstrap_options = "striped", full_width = T, position = "center") %>%
+    
+
+
+'''{r HeightComparison, fig.width = 9, fig.height=5}
+NBA %>%
+  ggplot(aes(Pos, Height, color=Pos)) +
+  geom_violin() +
+  ggtitle("Height distribution by position") +
+  stat_summary(fun.y=mean, geom="point", shape=8, size=6) +
+  geom_point() +
+  geom_hline(aes(yintercept = mean(NBA$Height, na.rm=T), linetype = "Average NBA players"),
+             col = "red",
+             alpha = 0.5) +
+  geom_hline(aes(yintercept = 177, linetype = "Average American male"),
+             col = "blue",
+             alpha = 0.5) +
+  scale_color_manual("Pos", values = PosColorCode) +
+  scale_linetype_manual(name = "", values = c(1, 1)) +
+  theme(legend.position="bottom")
+
+
+'''{r BMIDist, fig.height=5, fig.width=9, warning=FALSE}
+BMI <- NBA %>%
+    group_by(Player) %>%
+    filter(!is.na(BMI)) %>%
+    mutate(BMIGroup = ifelse(BMI < 18.5, "Underweight",
+                               ifelse(BMI >= 18.5 & BMI < 25, "Healthy weight",
+                                      ifelse(BMI >= 25 & BMI < 30, "Overweight",
+                                             "Obese Class I")))) %>%
+    summarise(Pos = getmode(Position),
+              Height = getmode(Height),
+              Weight = getmode(Weight),
+              BMI = getmode(BMI),
+              BMIGroup = getmode(BMIGroup),
+              Games = sum(G),
+              PPG = round(sum(PTS)/Games, 1))
+
+shade <- data.frame(xstart = c(15, 25, 30), xend = c(18.5, 30, 33), col = c("#F00", "#0F0", "#00F"))
+BMIclass <- data.frame(X = c(15.7, 20, 26.5, 31), Y = 0.27, label = c("Underweight", "Healthy weight", "Overweight", "Obese"))
+BMIMean <- mean(BMI$BMI)
+BMISD <- sd(BMI$BMI)
+
+BMI %>% ggplot() +
+    geom_rect(data = shade,
+              aes(xmin = xstart, xmax = xend, ymin = 0, ymax = Inf, fill = col),
+              alpha = 0.3) +
+    geom_density(aes(BMI, fill=TRUE)) +
+    scale_x_continuous(breaks = seq(15, 33, 1)) +
+    geom_vline(aes(xintercept = BMIMean, linetype = "Average line"),
+               col = "black",
+               alpha = 0.8) +
+    geom_vline(xintercept = c(seq(BMIMean, 33, BMISD), seq(BMIMean, 15, -BMISD)),
+               col = "blue",
+               alpha = 0.3,
+               linetype = 5) +
+    geom_text(data = BMIclass,
+              mapping = aes(x = X, y = Y, label = label),
+              size = 3,
+              vjust = 0,
+              hjust = 0,
+              color = "forestgreen") +
+    scale_linetype_manual(name = "", values = c(1, 1, 1, 1)) +
+    guides(fill=FALSE) +
+    theme(legend.position="bottom")
+
+
+'''{r obese, warning=FALSE}
+BMI %>%
+    arrange(desc(BMI)) %>%
+    filter(BMIGroup == "Obese Class I") %>%
+    select(BMI, everything()) %>%
+    kable("html", escape=F, align="c", caption = "Highest BMI (All in Obese Class I group)") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(1, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+'''{r HeightBubble, warning=FALSE, fig.width=8,plotly=TRUE}
+pBubble <- NBA %>%
+    filter(!is.na(BMI), !is.na(Weight), !is.na(Height)) %>%
+    plot_ly(x = ~Weight,
+            y = ~Height,
+            size = ~BMI,
+            color = ~Pos,
+            colors = PosColorCode,
+            frame = ~Year,
+            text = ~Player, 
+            hoverinfo = "text",
+            type = 'scatter',
+            mode = 'markers') %>% 
+    animation_opts(1000, easing = "elastic",
+                   redraw = FALSE) %>% 
+    animation_button(x = 1,
+                     xanchor = "right",
+                     y = 0,
+                     yanchor = "bottom") %>%
+    animation_slider(currentvalue = list(prefix = "Year: ", font = list(color="red")))
+
+pBubble
+'''{r RadarPos, warning=FALSE, message=FALSE, plotly=TRUE}
+RadarHeight <- NBA_Scaled %>%
+    group_by(Pos) %>%
+    summarise(Shoot2P = mean(X2P., na.rm=T),
+              Shoot3P = mean(X3P., na.rm=T),
+              ShootFT = mean(FT., na.rm=T),
+              OffensiveRB = mean(ORB, na.rm=T),
+              Assist = mean(AST, na.rm=T),
+              DefensiveRB = mean(DRB, na.rm=T),
+              Steal = mean(STL, na.rm=T),
+              Block = mean(BLK, na.rm=T)) %>%
+    select(-Pos)
+
+pRadar <- plot_ly(type = 'scatterpolar',
+        fill = 'toself',
+        mode = 'lines') %>%
+    add_trace(r = as.numeric(as.vector(RadarHeight[1,])),
+              theta = as.character(as.vector(colnames(RadarHeight))),
+              name = 'C',
+              fillcolor = "#FF0000",
+              opacity = 0.5) %>%
+    add_trace(r = as.numeric(as.vector(RadarHeight[2,])),
+              theta = as.character(as.vector(colnames(RadarHeight))),
+              name = 'PF',
+              fillcolor = "#FFA500",
+              opacity = 0.5) %>%
+    add_trace(r = as.numeric(as.vector(RadarHeight[3,])),
+              theta = as.character(as.vector(colnames(RadarHeight))),
+              name = 'SF',
+              fillcolor = "#DDDD00",
+              opacity = 0.5) %>%
+    add_trace(r = as.numeric(as.vector(RadarHeight[4,])),
+              theta = as.character(as.vector(colnames(RadarHeight))),
+              name = 'SG',
+              fillcolor = "#0000FF",
+              opacity = 0.5) %>%
+    add_trace(r = as.numeric(as.vector(RadarHeight[5,])),
+              theta = as.character(as.vector(colnames(RadarHeight))),
+              name = 'PG',
+              fillcolor = "#32CD32",
+              opacity = 0.5) %>%
+    layout(polar = list(
+        radialaxis = list(
+        visible = T,
+        range = c(-1, 1))))
+'''{r AgeYears, fig.height=5, fig.width=9, warning=FALSE}
+NBA %>%
+    group_by(Year) %>%
+    summarise(Average = round(mean(Age, na.rm = T), 2),
+              Max = max(Age, na.rm = T),
+              Min = min(Age, na.rm = T)) %>%
+    ggplot(aes(Year)) +
+    geom_line(aes(y = Max, linetype = "Oldest"), color = "red", alpha = 0.5) +
+    geom_line(aes(y = Average, linetype = "Average"), color = "black") +
+    geom_line(aes(y = Min, linetype = "Youngest"), color = "blue", alpha = 0.5) +
+    ggtitle("Age Range by Year") +
+    scale_x_continuous(breaks = seq(1950, 2017, 10)) +
+    scale_linetype_manual(name = "", values = c(1, 1, 1)) +
+    guides(group=FALSE) +
+    theme(legend.position="bottom")
+'''{r Generation, fig.height=5, fig.width=9, warning=FALSE}
+NBA %>%
+    group_by(Year, Player) %>%
+    filter(!is.na(Born)) %>%
+    mutate(Generation = ifelse(Born <= 1921, "The Depression Era",
+                          ifelse(Born %in% 1922:1927, "World War II",
+                            ifelse(Born %in% 1928:1945, "Post-War Cohort",
+                              ifelse(Born %in% 1946:1954, "Baby Boomers",
+                                ifelse(Born %in% 1955:1965, "Generation Jones",
+                                  ifelse(Born %in% 1966:1976, "Generation X",
+                                    ifelse(Born %in% 1977:1995, "Millennials",
+                                      "Generation Z")))))))) %>%
+    summarise(Generation = getmode(Generation)) %>%
+    arrange(Year, Player) %>%
+    mutate(Generation = factor(Generation, levels = c("The Depression Era",
+                                                     "World War II",
+                                                     "Post-War Cohort",
+                                                     "Baby Boomers",
+                                                     "Generation Jones",
+                                                     "Generation X",
+                                                     "Millennials",
+                                                     "Generation Z"))) %>%
+    ggplot(aes(Year, y=..count.., colour=Generation, fill=Generation)) +
+    geom_density(alpha=0.55) +
+    ggtitle("Generation Count by Year") +
+    ylab("Count") +
+    scale_x_continuous(breaks = seq(1950, 2017, 10)) +
+    theme(legend.position='bottom')
+'''{r earliest, warning=FALSE}
+NBA %>%
+    group_by(Player, Born) %>%
+    summarise(Pos = getmode(Position),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              NBASeasons = n_distinct(Year),
+              Games = sum(G),
+              StartingAge = min(Age),
+              FinalAge = max(Age),
+              PPG = round(sum(PTS)/sum(G), 1)) %>%
+    arrange(Born) %>%
+    select(Born, everything()) %>%
+    head(9) %>%
+    kable("html", escape=F, align="c", caption = "Earliest Born") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(1, bold = T, color = "white", background = "#777777") %>%
+    column_spec(2, bold = T)
+'''{r Career, fig.height=5, fig.width=9, warning=FALSE}
+SeasonNBA <- NBA %>%
+    group_by(Player, Born) %>%
+    summarise(NBASeasons = n_distinct(Year))
+
+SeasonNBA %>%
+    ggplot(aes(NBASeasons)) +
+    geom_bar(aes(fill = ..count..)) +
+    ggtitle("Player Distribution by Number of Seasons") +
+    geom_vline(aes(xintercept = mean(NBASeasons, na.rm = T), linetype = "Average line"),
+               col = "black",
+               alpha = 0.5) +
+    scale_fill_gradient(low = "green", high = "red") +
+    scale_linetype_manual(name = "", values = 2) +
+    xlab("Number of NBA Seasons") +
+    ylab("Count") +
+    theme(legend.position="bottom")
+'''{r longest, warning=FALSE}
+NBA %>%
+    group_by(Player, Born) %>%
+    summarise(Pos = getmode(Position),
+              Team = getmode(Tm),
+              ActiveYears = paste(min(Year), "-", max(Year)),
+              RookieAge = min(Age),
+              RetirementAge = max(Age),
+              Seasons = n_distinct(Year),
+              RpG = round(sum(TRB)/sum(G), 1),
+              PpG = round(sum(PTS)/sum(G), 1)) %>%
+    arrange(desc(Seasons), ActiveYears) %>%
+    select(Seasons, everything(), -Born) %>%
+    head(17) %>%
+    kable("html", escape=F, align="c", caption = "Longest Career in the NBA") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(1, bold = T, color = "white", background = "#777777") %>%
+    column_spec(2, bold = T)
+'''{r RookieRetiree, fig.height=5, fig.width=9, warning=FALSE}
+RRAge <- NBA %>%
+    group_by(Player) %>%
+    filter(!is.na(Age)) %>%
+    summarise(RookieAge = min(Age),
+              RetirementAge = max(Age)) %>%
+    gather(Parameter, Value, RookieAge:RetirementAge)
+
+RRAge %>%
+    ggplot(aes(x=as.factor(Value),fill=Parameter)) + 
+    geom_bar(data=filter(RRAge, Parameter == "RetirementAge")) + 
+    geom_bar(data=filter(RRAge, Parameter == "RookieAge"), aes(y = ..count.. * (-1))) +
+    ggtitle("Rookie Age vs, Retirement Age in the NBA") +
+    xlab("Age") +
+    ylab("Count") +
+    scale_y_continuous(breaks=seq(-1500,1500,500),labels=abs(seq(-1500,1500,500))) +
+    scale_fill_brewer(palette = "Set1") + 
+    coord_flip() +
+    theme(legend.position="bottom")
+
+RRAge <- RRAge %>%
+    spread(Parameter, Value)
+'''{r olderstrookies, warning=FALSE}
+NBA %>%
+    filter(YearStart >= 1950) %>%
+    group_by(Player) %>%
+    summarise(RookieAge = min(Age),
+              Pos = getmode(Position),
+              Team = getmode(Tm),
+              RetirementAge = max(Age),
+              NBAYears = paste(min(Year), "-", max(Year)),
+              NBASeasons = n_distinct(Year),
+              Games = sum(G),
+              PpG = round(sum(PTS)/Games,2)) %>%
+    arrange(desc(RookieAge)) %>%
+    select(RookieAge, everything()) %>%
+    head(10) %>%
+    kable("html", escape=F, align="c", caption = "Oldest NBA Rookies") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(1, bold = T, color = "white", background = "#777777")
+'''{r oldestplayer, warning=FALSE}
+NBA %>%
+    select(Age, Player, Position, Year, Tm, G, GS, PTS) %>%
+    mutate(PPG = round(PTS/G, 2)) %>%
+    arrange(desc(Age)) %>%
+    head(n=10) %>%
+    kable("html", escape=F, align="c", caption = "Oldest NBA Players") %>%
+    kable_styling(bootstrap_options = "striped", position = "center") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(1, bold = T, color = "white", background = "#777777")
+'''{r AgeCor, fig.width=9, warning=FALSE}
+AgeCor <- NBA_Scaled %>%
+    group_by(Age) %>%
+    summarise(Games = mean(G, na.rm = T),
+              GameStarted = mean(GS, na.rm = T),
+              MinutesPlayed = mean(MP, na.rm = T),
+              Shooting = mean(TS., na.rm = T),
+              ShootAttemps = mean(FGA, na.rm = T),
+              Rebound = mean(RpG, na.rm = T),
+              Assist = mean(ApG, na.rm = T),
+              Steal = mean(SpG, na.rm = T),
+              Block = mean(BpG, na.rm = T),
+              Turnover = mean(TpG, na.rm = T),
+              Points = mean(PpG, na.rm = T)) %>%
+    gather(variable, value, -Age) %>%
+    filter(!is.na(Age)) %>%
+    mutate(variable = factor(variable, levels = c("Games", "GameStarted", "MinutesPlayed", "Shooting", "ShootAttemps", "Rebound", "Assist", "Steal", "Block", "Turnover", "Points")))
+
+AgeCor %>%
+    ggplot(aes(Age, variable, fill=value)) +
+    geom_tile(color = "grey50") +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_fill_gradientn(colors = brewer.pal(9, "Reds")) +
+    theme(panel.grid = element_blank()) +
+    scale_y_discrete(limits = rev(levels(AgeCor$variable))) +
+    ggtitle("Age, Chance and Ability") +
+    ylab("Parameter") +
+    theme(legend.position="bottom")
+
