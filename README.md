@@ -16,13 +16,12 @@ We will use the NBA data from 1950 to 2015 to analyze the performance of any ind
 5) screenshot of player distribution by number of season:- From the graph, we can visualize that each player played in 5 NBA seasons in general.
 <img src="https://github.com/harshpatel67/Statistics-of-NBA-players-using-Data-Mining/blob/master/assets/images/Player%20Distribution%20by%20number%20of%20Seasons.png">
 
-6) screenshot of player distribution by number of season:- As you see in the graph, the average height of an American is lower than the NBA players.
-NBA players has quite high heights than an American. Average height of NBA players is: 199.6 cm while an American has 177 cm.
+6) screenshot of comparing height of American and NBA player :- As you see in the graph, the average height of an American is lower than the NBA players. NBA players has quite high heights than an American. Average height of NBA players is: 199.6 cm while an American has 177 cm.
 .<img src="https://github.com/harshpatel67/Statistics-of-NBA-players-using-Data-Mining/blob/master/assets/images/HeightDist-1.png">
 
-7) screenshot of player distribution by number of season:- This graph is for Hit/Miss graph by each position.The opacity part shows the miss and the darker part shows Hit. Most points are hit at the SG position
+7) screenshot of Hit/Missed shoots by position:- This graph is for Hit/Miss graph by each position.The opacity part shows the miss and the darker part shows Hit. Most points are hit at the SG position
 <img src="https://github.com/harshpatel67/Statistics-of-NBA-players-using-Data-Mining/blob/master/assets/images/HitMissbyPos-1.png">
 
-8) screenshot of player distribution by number of season:- FT : (Free Throw) for each successful FT throw, the player scores 1 point. FG : (Field Goal) for each FG successfully made from within the three-point line, the player scores 2 point. FG3: (Field Goal) for each FG successfully made from beyond three-point line, the player scores 3 point. Average team score per game across the game is 101.55. As per the graph, scoring the FG3 is been increasing than FT.
+8) screenshot of annual Team scores per Game :- FT : (Free Throw) for each successful FT throw, the player scores 1 point. FG : (Field Goal) for each FG successfully made from within the three-point line, the player scores 2 point. FG3: (Field Goal) for each FG successfully made from beyond three-poiHnt line, the player scores 3 point. Average team score per game across the game is 101.55. As per the graph, scoring the FG3 is been increasing than FT.
 <img src="https://github.com/harshpatel67/Statistics-of-NBA-players-using-Data-Mining/blob/master/assets/images/Point.png">
 
