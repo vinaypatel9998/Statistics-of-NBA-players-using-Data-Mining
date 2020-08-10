@@ -1,5 +1,5 @@
 
-
+```{r setup, message=FALSE, warning=FALSE}
 library(dplyr)
 library(tidyr)
 library(measurements)
@@ -9,9 +9,9 @@ library(RColorBrewer)
 library(plotly)
 library(reshape2)
 library(kableExtra)
+```
 
-
-'''{r processing}
+```{r processing}
 ## Create additional functions
 
 # Mode average
@@ -30,8 +30,8 @@ convertHeight <- function(x) {
 
 # Load the data.
 
-NBA <- read.csv("Seasons_Stats.csv")[, c(2:9, 11:20, 32:53)]
-PlayerData <- read.csv("player_data.csv")[, c(1:3, 5:6)]
+NBA <- read.csv("NBA/Seasons_Stats.csv")[, c(2:9, 11:20, 32:53)]
+PlayerData <- read.csv("NBA/player_data.csv")[, c(1:3, 5:6)]
 
 # Remove NA rows
 NBA <- NBA %>% filter(!is.na(Year), !is.na(Player))
@@ -49,11 +49,11 @@ NBA[21304, 3] = "SG"
 
 #Renaming some columns of the dataset
 
-colnames(PlayerData) <- c("player", "YearStart", "YearEnd", "Height-feet", "Weight-lbs")
+colnames(PlayerData) <- c("Name", "YearStart", "YearEnd", "Height-feet", "Weight-lbs")
 
 # Merging data
 
-NBA <- sqldf("SELECT * FROM NBA JOIN PlayerData ON NBA.Player = PlayerData.player 
+NBA <- sqldf("SELECT * FROM NBA JOIN PlayerData ON NBA.Player = PlayerData.Name 
       WHERE NBA.Year >= PlayerData.YearStart AND NBA.Year <= PlayerData.YearEnd")
 
 # Fixing Position
@@ -102,7 +102,10 @@ NBA_Scaled <- NBA %>% mutate_at(vars(c(G:MP, FG:PpG)), scale)
 
 NBA_Scaled <- NBA
 NBA_Scaled[, c(6:8, 15:54)] <- scale(NBA[, c(6:8, 15:54)])
-'''{r teamplayer, warning=FALSE}
+```
+
+
+```{r teamplayer, warning=FALSE}
 Team_Player <- NBA %>%
   group_by(Year) %>%
   summarise(nPlayers = n_distinct(Player),
@@ -111,11 +114,14 @@ Team_Player <- NBA %>%
             Players_per_Team = round(nPlayers/nTeams, 2)) 
 
 Team_Player %>%
-    kable(escape = FALSE, align="c", caption = "Players, Teams and Games") %>%
+    kable(escape = FALSE, align='c', caption = "Players, Teams and Games") %>%
     kable_styling("striped", full_width = T) %>%
     column_spec(1, bold = T) %>%
     scroll_box(width = "100%", height = "300px")
-'''''''{r TeamGrowth, fig.width = 9, fig.height=5}
+```
+
+
+```{r TeamGrowth, fig.width = 9, fig.height=5}
 Team_Player %>%
     ggplot() +
     geom_line(aes(Year, nTeams, linetype = "Trend line")) +
@@ -127,7 +133,10 @@ Team_Player %>%
     scale_linetype_manual(name = "", values = c(2, 1), guide = guide_legend(reverse = TRUE)) +
     ylab("Number of Teams") +
     theme(legend.position="bottom")
-'''{r PlayerGrowth, fig.width = 9, fig.height=5}
+```
+
+
+```{r PlayerGrowth, fig.width = 9, fig.height=5}
 Team_Player %>%
     ggplot(aes(Year, nPlayers, fill=nPlayers)) +
     geom_bar(stat = "identity") +
@@ -140,9 +149,11 @@ Team_Player %>%
     scale_linetype_manual(name = "", values = 2) +
     ylab("Number of Players") +
     theme(legend.position="bottom")
+```
 
 
-'''{r HeightDist, fig.width = 9, fig.height=5}
+
+```{r HeightDist, fig.width = 9, fig.height=5}
 HeightMean <- mean(NBA$Height)
 HeightSD <- sd(NBA$Height)
 
@@ -162,7 +173,9 @@ NBA %>% ggplot(aes(Height, fill=TRUE)) +
     scale_linetype_manual(name = "", values = c(1, 1)) +
     guides(fill=FALSE) +
     theme(legend.position="bottom")
-'''{r shortest, warning = FALSE}
+```
+
+```{r shortest, warning=FALSE}
 NBA %>%
     group_by(Height, Player) %>%
     summarise(Pos = getmode(Position),
@@ -176,7 +189,8 @@ NBA %>%
     kable_styling(bootstrap_options = "striped", position = "center") %>%
     column_spec(2, bold = T) %>%
     column_spec(1, bold = T, color = "white", background = "#777777")
-    NBA %>%
+
+NBA %>%
     group_by(Height, Player) %>%
     summarise(Pos = getmode(Position),
               YearActive = paste(mean(YearStart), "-", mean(YearEnd)),
@@ -189,9 +203,9 @@ NBA %>%
     kable_styling(bootstrap_options = "striped", position = "center") %>%
     column_spec(2, bold = T) %>%
     column_spec(1, bold = T, color = "white", background = "#777777")
+```
 
-
-'''{r heightpos, warning=FALSE}
+```{r heightpos, warning=FALSE}
 NBA %>%
     group_by(Pos) %>%
     summarise(MinHeight = min(Height),
@@ -205,11 +219,10 @@ NBA %>%
                             background = factor(Pos, c("C", "PF", "SF", "SG", "PG"),
                                                 PosColorCode))) %>%
     kable("html", escape=F, align="c", caption = "Height: Averages and Range by Position") %>%
-    kable_styling(bootstrap_options = "striped", full_width = T, position = "center") %>%
-    
+    kable_styling(bootstrap_options = "striped", full_width = T, position = "center")
+```
 
-
-'''{r HeightComparison, fig.width = 9, fig.height=5}
+```{r HeightComparison, fig.width = 9, fig.height=5}
 NBA %>%
   ggplot(aes(Pos, Height, color=Pos)) +
   geom_violin() +
@@ -225,9 +238,9 @@ NBA %>%
   scale_color_manual("Pos", values = PosColorCode) +
   scale_linetype_manual(name = "", values = c(1, 1)) +
   theme(legend.position="bottom")
+```
 
-
-'''{r BMIDist, fig.height=5, fig.width=9, warning=FALSE}
+```{r BMIDist, fig.height=5, fig.width=9, warning=FALSE}
 BMI <- NBA %>%
     group_by(Player) %>%
     filter(!is.na(BMI)) %>%
@@ -270,9 +283,9 @@ BMI %>% ggplot() +
     scale_linetype_manual(name = "", values = c(1, 1, 1, 1)) +
     guides(fill=FALSE) +
     theme(legend.position="bottom")
+```
 
-
-'''{r obese, warning=FALSE}
+```{r obese, warning=FALSE}
 BMI %>%
     arrange(desc(BMI)) %>%
     filter(BMIGroup == "Obese Class I") %>%
@@ -282,7 +295,9 @@ BMI %>%
     column_spec(2, bold = T) %>%
     column_spec(1, bold = T, color = "white", background = "#777777") %>%
     scroll_box(width = "100%", height = "300px")
-'''{r HeightBubble, warning=FALSE, fig.width=8,plotly=TRUE}
+```
+
+```{r HeightBubble, warning=FALSE, fig.width=8,plotly=TRUE}
 pBubble <- NBA %>%
     filter(!is.na(BMI), !is.na(Weight), !is.na(Height)) %>%
     plot_ly(x = ~Weight,
@@ -304,7 +319,9 @@ pBubble <- NBA %>%
     animation_slider(currentvalue = list(prefix = "Year: ", font = list(color="red")))
 
 pBubble
-'''{r RadarPos, warning=FALSE, message=FALSE, plotly=TRUE}
+```
+
+```{r RadarPos, warning=FALSE, message=FALSE, plotly=TRUE}
 RadarHeight <- NBA_Scaled %>%
     group_by(Pos) %>%
     summarise(Shoot2P = mean(X2P., na.rm=T),
@@ -349,7 +366,9 @@ pRadar <- plot_ly(type = 'scatterpolar',
         radialaxis = list(
         visible = T,
         range = c(-1, 1))))
-'''{r AgeYears, fig.height=5, fig.width=9, warning=FALSE}
+```
+
+```{r AgeYears, fig.height=5, fig.width=9, warning=FALSE}
 NBA %>%
     group_by(Year) %>%
     summarise(Average = round(mean(Age, na.rm = T), 2),
@@ -364,7 +383,9 @@ NBA %>%
     scale_linetype_manual(name = "", values = c(1, 1, 1)) +
     guides(group=FALSE) +
     theme(legend.position="bottom")
-'''{r Generation, fig.height=5, fig.width=9, warning=FALSE}
+```
+
+```{r Generation, fig.height=5, fig.width=9, warning=FALSE}
 NBA %>%
     group_by(Year, Player) %>%
     filter(!is.na(Born)) %>%
@@ -392,7 +413,9 @@ NBA %>%
     ylab("Count") +
     scale_x_continuous(breaks = seq(1950, 2017, 10)) +
     theme(legend.position='bottom')
-'''{r earliest, warning=FALSE}
+```
+
+```{r earliest, warning=FALSE}
 NBA %>%
     group_by(Player, Born) %>%
     summarise(Pos = getmode(Position),
@@ -409,7 +432,9 @@ NBA %>%
     kable_styling(bootstrap_options = "striped", position = "center") %>%
     column_spec(1, bold = T, color = "white", background = "#777777") %>%
     column_spec(2, bold = T)
-'''{r Career, fig.height=5, fig.width=9, warning=FALSE}
+```
+
+```{r Career, fig.height=5, fig.width=9, warning=FALSE}
 SeasonNBA <- NBA %>%
     group_by(Player, Born) %>%
     summarise(NBASeasons = n_distinct(Year))
@@ -426,7 +451,9 @@ SeasonNBA %>%
     xlab("Number of NBA Seasons") +
     ylab("Count") +
     theme(legend.position="bottom")
-'''{r longest, warning=FALSE}
+```
+
+```{r longest, warning=FALSE}
 NBA %>%
     group_by(Player, Born) %>%
     summarise(Pos = getmode(Position),
@@ -444,7 +471,9 @@ NBA %>%
     kable_styling(bootstrap_options = "striped", position = "center") %>%
     column_spec(1, bold = T, color = "white", background = "#777777") %>%
     column_spec(2, bold = T)
-'''{r RookieRetiree, fig.height=5, fig.width=9, warning=FALSE}
+```
+
+```{r RookieRetiree, fig.height=5, fig.width=9, warning=FALSE}
 RRAge <- NBA %>%
     group_by(Player) %>%
     filter(!is.na(Age)) %>%
@@ -466,7 +495,9 @@ RRAge %>%
 
 RRAge <- RRAge %>%
     spread(Parameter, Value)
-'''{r olderstrookies, warning=FALSE}
+```
+
+```{r olderstrookies, warning=FALSE}
 NBA %>%
     filter(YearStart >= 1950) %>%
     group_by(Player) %>%
@@ -485,7 +516,9 @@ NBA %>%
     kable_styling(bootstrap_options = "striped", position = "center") %>%
     column_spec(2, bold = T) %>%
     column_spec(1, bold = T, color = "white", background = "#777777")
-'''{r oldestplayer, warning=FALSE}
+```
+
+```{r oldestplayer, warning=FALSE}
 NBA %>%
     select(Age, Player, Position, Year, Tm, G, GS, PTS) %>%
     mutate(PPG = round(PTS/G, 2)) %>%
@@ -495,7 +528,9 @@ NBA %>%
     kable_styling(bootstrap_options = "striped", position = "center") %>%
     column_spec(2, bold = T) %>%
     column_spec(1, bold = T, color = "white", background = "#777777")
-'''{r AgeCor, fig.width=9, warning=FALSE}
+```
+
+```{r AgeCor, fig.width=9, warning=FALSE}
 AgeCor <- NBA_Scaled %>%
     group_by(Age) %>%
     summarise(Games = mean(G, na.rm = T),
@@ -523,4 +558,4 @@ AgeCor %>%
     ggtitle("Age, Chance and Ability") +
     ylab("Parameter") +
     theme(legend.position="bottom")
-
+```
