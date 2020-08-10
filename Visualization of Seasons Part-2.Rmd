@@ -1,0 +1,629 @@
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(measurements)
+library(sqldf)
+library(ggplot2)
+library(RColorBrewer)
+library(plotly)
+library(ggridges)
+library(kableExtra)
+library(wordcloud2)
+library(forcats)
+```
+
+```{r processing}
+## Create additional functions
+
+# Mode average
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+convertHeight <- function(x) {
+    x <- as.character(x)
+    split <- strsplit(x, "-")
+    feet <- as.numeric(split[[1]][1])
+    inch <- as.numeric(split[[1]][2])
+    round(conv_unit(feet, "ft", "cm") + conv_unit(inch, "inch", "cm"),0)
+}
+
+# Load the data.
+
+NBA <- read.csv("NBA/Seasons_Stats.csv")[, c(2:9, 11:20, 32:53)]
+PlayerData <- read.csv("NBA/player_data.csv")[, c(1:3, 5:6)]
+
+# Remove NA rows
+NBA <- NBA %>% filter(!is.na(Year), !is.na(Player))
+
+# Remove Team = TOT (which indicates total, when player played in more than 1 team in a season)
+NBA <- NBA[NBA$Tm != "TOT",]
+
+# Remove of "*" which indicates a player is a member of NBA Hall of Fame
+NBA$Player <- gsub("\\*$", "", NBA$Player)
+
+# Fix player data
+PlayerData[2143, 4] = as.factor("6-2")
+PlayerData[2143, 5] = 190
+NBA[21304, 3] = "SG"
+
+#Renaming some columns of the dataset
+
+colnames(PlayerData) <- c("Name", "YearStart", "YearEnd", "Height-feet", "Weight-lbs")
+
+# Merging data
+
+NBA <- sqldf("SELECT * FROM NBA JOIN PlayerData ON NBA.Player = PlayerData.Name 
+      WHERE NBA.Year >= PlayerData.YearStart AND NBA.Year <= PlayerData.YearEnd")
+
+# Fixing Position
+
+# In here, for simplicity and aesthetical purpose, I arbitrarily framed up all the players into the standard five position used today and then color-coded them:
+
+NBA$Pos[NBA$Pos == "C-F"] <- "C"
+NBA$Pos[NBA$Pos == "F-C"] <- "PF"
+NBA$Pos[NBA$Pos == "F"] <- "PF"
+NBA$Pos[NBA$Pos == "F-G"] <- "SF"
+NBA$Pos[NBA$Pos == "G"] <- "SG"
+NBA$Pos[NBA$Pos == "G-F"] <- "SF"
+NBA$Pos <- factor(NBA$Pos, levels = c("C", "PF", "SF", "SG", "PG"))
+PosColorCode <- c("C"="#FF0000", "PF"="#FFA500", "SF"="#DDDD00" ,"SG"="#0000FF", "PG"="#32CD32")
+
+# Create new variables:
+
+NBA <- NBA %>%
+    mutate(Height = convertHeight(`Height-feet`),
+           Weight = round(conv_unit(`Weight-lbs`, "lbs", "kg"),0),
+           BMI = round(Weight / (Height / 100)^2, 2),
+           Born = Year - Age,
+           ORpG = ORB / G,
+           DRpG = DRB / G,
+           RpG = TRB / G,
+           ApG = AST / G,
+           SpG = STL / G,
+           BpG = BLK / G,
+           TpG = TOV / G,
+           PpG = PTS / G,
+           Position = cell_spec(Pos,
+                            color = "white",
+                            align = "c",
+                            background = factor(Pos, c("C", "PF", "SF", "SG", "PG"),
+                                                PosColorCode)))
+
+# Arrange the table.
+
+NBA <- NBA %>%
+    select(Year:MP, YearStart:BMI, "Born", FG:PTS, TS.:TOV., ORpG:PpG, "Position", -c("Height-feet", "Weight-lbs"))
+
+# Create duplicate table with normalized stats.
+
+NBA_Scaled <- NBA
+NBA_Scaled[, c(6:8, 15:54)] <- scale(NBA[, c(6:8, 15:54)])
+```
+
+```{r top3p}
+Top3Pts. <- NBA %>%
+    filter(Year >= 1980 & X3P. > 0) %>%
+    group_by(Year, Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              Games = sum(G),
+              MPG = round(sum(MP)/Games, 1),
+              PPG = round(sum(PTS)/Games, 1),
+              x3Pm = sum(X3P),
+              x3Pa = sum(X3PA),
+              x3Pt. = round(x3Pm/x3Pa, 3)) %>%
+    filter(ifelse(Year %in% 1980:1990, x3Pm >= 25,
+                  ifelse(Year %in% 1991:1994, x3Pm >= 50,
+                    ifelse(Year %in% c(1998, 2000, 2004:2008, 2010), x3Pm >= 55,
+                      ifelse(Year %in% 1999, x3Pm >= 34,
+                        ifelse(Year %in% 2012, x3Pm >= 44,
+                          x3Pm >= 82)))))) %>%
+    group_by(Year) %>%
+    summarise(Player = Player[which.max(x3Pt.)],
+              Team = Team[which.max(x3Pt.)],
+              Pos = Pos[which.max(x3Pt.)],
+              Games = Games[which.max(x3Pt.)],
+              MPG = MPG[which.max(x3Pt.)],
+              PPG = PPG[which.max(x3Pt.)],
+              x3Pm = x3Pm[which.max(x3Pt.)],
+              x3Pa = x3Pa[which.max(x3Pt.)],
+              x3Pt. = max(x3Pt., na.rm = T)) %>%
+    arrange(desc(Year))
+
+Top3Pts. %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Annual 3-Points % League Leaders") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(10, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r T3p, warning = FALSE, fig.width = 9, fig.height = 4.5, include=FALSE}
+mean3PT.Year <- NBA %>%
+    group_by(Year) %>%
+    filter(Year >= 1980 & X3P. > 0) %>%
+    summarise(x3PT. = sum(X3P, na.rm = T)/sum(X3PA, na.rm = T))
+
+T3p. <- Top3Pts. %>%
+    ggplot() +
+    geom_bar(aes(Year, x3Pt., fill = Pos, text = paste("Player:", Player)), stat = "identity") +
+    geom_line(data=mean3PT.Year, aes(Year, x3PT., linetype = "Average line"), color = "black") +
+    ggtitle("Annual 3-point Shooting Leaders") +
+    geom_hline(yintercept = mean(Top3Pts.$x3Pt.), col = "blue", alpha = 0.5) +
+    scale_x_continuous(breaks = seq(1950, 2017, 10)) +
+    scale_fill_manual("Pos", values = PosColorCode) +
+    theme(legend.position="none")
+
+pT3p. <- ggplotly(T3p.)
+pT3p.
+```
+
+```{r alltime3P}
+AllTime3P. <- NBA %>%
+    filter(X3P. > 0) %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Games = sum(G),
+              MPG = round(sum(MP) / Games, 1),
+              PPG = round(sum(PTS) / Games, 1),
+              x3Pm = sum(X3P),
+              x3Pa = sum(X3PA),
+              x3P. = round(x3Pm/x3Pa, 3)) %>%
+    filter(x3Pm >= 250) %>%
+    arrange(desc(x3P.), desc(x3Pm)) %>%
+    mutate(Rank = min_rank(desc(x3P.))) %>%
+    select(Rank, everything())
+
+AllTime3P. %>%
+    head(n=10) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "All-Time 3 Points Field Goals % Leaders") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(11, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r AllTime3P, fig.width = 9}
+LabelFix <- AllTime3P. %>%
+    head(10) %>%
+    mutate(Player = fct_reorder(Player, desc(x3P.), fun=mean),
+           x3Pa = x3Pa-x3Pm,
+           x3P. = paste(x3P. * 100, "%")) %>%
+    head(n=10) %>%
+    gather(Parameter, Count, x3Pm:x3Pa, -c(Player, x3P.)) %>%
+    filter(Parameter == "x3Pa")
+    
+AllTime3P. %>%
+    head(10) %>%
+    mutate(Player = fct_reorder(Player, desc(x3P.), fun=mean),
+           x3Pa = x3Pa-x3Pm) %>%
+    gather(Parameter, Count, x3Pm:x3Pa, -c(Player, x3P.)) %>%
+    ggplot(aes(Player, Count, fill = Parameter)) + 
+    geom_bar(stat = 'identity', position = 'stack') +
+    geom_label(aes(label = x3P.,
+                   y = 5000),
+               data = LabelFix,
+               stat = 'identity',
+               position = "stack",
+               fill = "#FF4000",
+               color = "#00FFFF",
+               size = 4.5) +
+    ggtitle("All-Time 3 Points Percentage Leaders") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    xlab("") +
+    scale_fill_manual(labels=c("3Pts-missed  ", "3Pts-made"), values=c("#66B266", "#008000")) +
+    theme(legend.title=element_blank()) +
+    theme(legend.position="bottom")
+```
+
+```{r TOp3PbyPos}
+Top3P.Pos <- AllTime3P. %>%
+    group_by(Pos) %>%
+    summarise(Player = Player[which.max(x3P.)],
+              Team = Team[which.max(x3P.)],
+              ActiveYears = ActiveYears[which.max(x3P.)],
+              Games = Games[which.max(x3P.)],
+              MPG = MPG[which.max(x3P.)],
+              PPG = PPG[which.max(x3P.)],
+              x3Pm = x3Pm[which.max(x3P.)],
+              x3Pa = x3Pa[which.max(x3P.)],
+              x3P. = x3P.[which.max(x3P.)])
+```
+
+```{r threepm36}
+AllTime3Pma <- NBA %>%
+    group_by(Player) %>%
+    filter(sum(G) >= 400) %>%
+    summarise(Pos = getmode(Position),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Games = sum(G),
+              Minutes = sum(MP),
+              MPG = round(Minutes /sum(G), 1),
+              PPG = round(sum(PTS)/sum(G), 1),
+              x3Pm_36 = round((sum(X3P) / Minutes) * 36, 1),
+              x3Pm_G = round(sum(X3P) / Games, 1),
+              x3Pa_36 = round((sum(X3PA) / Minutes) * 36, 1),
+              x3Pa_G = round(sum(X3PA) / Games, 1),
+              x3P. = round(sum(X3P)/sum(X3PA), 3)) %>%
+    select(-"Minutes")
+
+AllTime3Pma %>%
+    arrange(desc(x3Pm_36), desc(x3P.)) %>%
+    head(n=10) %>%
+    mutate(Rank = min_rank(desc(x3Pm_36))) %>%
+    select(Rank, everything()) %>%
+    kable(escape = FALSE, align = "c", caption = "3-Points Made per 36 Minutes") %>%
+    kable_styling("striped", full_width = T, font_size = 11) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(c(2, 13), bold = T) %>%
+    column_spec(9, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r threepa36}
+AllTime3Pma %>%
+    arrange(desc(x3Pa_36), desc(x3P.)) %>%
+    head(n=10) %>%
+    mutate(Rank = min_rank(desc(x3Pa_36))) %>%
+    select(Rank, everything()) %>%
+    kable(escape = FALSE, align = "c", caption = "3-Points Attempts per 36 Minutes") %>%
+    kable_styling("striped", full_width = T, font_size = 11) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(c(2, 13), bold = T) %>%
+    column_spec(11, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r ThreePma36, fig.width=9}
+AllTime3Pma %>%
+    arrange(desc(x3Pm_36), desc(x3P.)) %>%
+    mutate(Player = reorder(Player, desc(x3Pm_36), FUN=mean)) %>%
+    head(n=10) %>%
+    ggplot(aes(group = 1)) +
+    geom_segment(aes(x=Player, xend=Player, y=x3Pm_36, yend=x3Pa_36), color="black") +
+    geom_point(aes(Player, x3Pm_36, color="#FF5800"), size=5) +
+    geom_point(aes(Player, x3Pa_36, color="#FF5800"), size=2.5) +
+    geom_point(aes(Player, x3Pm_G, color="#009dff"), size=5, shape=18) +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    ggtitle("3-Pts Made per 36 Minutes vs. 3-Pts Made per Game") +
+    xlab("") +
+    ylab("3-Pts Made") +
+    scale_color_manual(name="", values=c("#009dff", "#FF5800"),
+                       labels=c("3-Pts a/m per Game", "3-Pts a/m per 36 minutes"),
+                       guide = guide_legend(reverse=TRUE)) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.position='none')
+```
+
+```{r threePnames}
+# Filter total 3-Points made with 3P% > .380
+AllTime3Pm <- NBA %>%
+    group_by(Player) %>%
+    summarise(x3Pm = sum(X3P),
+              x3Pa = sum(X3PA),
+              x3P. = x3Pm / x3Pa) %>%
+    filter(x3P. > 0.38) %>%
+    arrange(desc(x3Pm)) %>% head(10)
+
+# Filter 3-Points made per 36 minutes with 3P% > .380
+AllTime3Pm36 <- AllTime3Pma %>%
+    filter(x3P. >= 0.38) %>%
+    arrange(desc(x3Pm_36)) %>%
+    head(n=10)
+
+# Create Three-Points Contest data frame
+Year <- c(1986:1998, 2000:2018)
+Player <- c(rep("Larry Bird", 3), "Dale Ellis", rep("Craig Hodges", 3), rep("Mark Price", 2), "Glen Rice", "Tim Legler", "Steve Kerr", rep("Jeff Hornacek", 2), "Ray Allen", rep("Peja Stojakovic", 2), "Voshon Lenard", "Quentin Richardson","Dirk Nowitzki", rep("Jason Kapono", 2), "Daequan Cook", "Paul Pierce", "James Jones", "Kevin Love", "Kyrie Irving", "Marco Belinelli", "Stephen Curry", "Klay Thompson", "Eric Gordon", "Devin Booker")
+TPContest <- data.frame(Year, Player)
+
+# Create all three-pointers leaders
+Super3Pointers <- data.frame(Player = c(as.character(Top3Pts.$Player),
+                               as.character(rep(head(AllTime3P.$Player, 10), 2)),
+                               as.character(AllTime3Pm$Player),
+                               as.character(AllTime3Pm36$Player),
+                               as.character(TPContest$Player))) %>%
+    count(Player) %>%
+    arrange(desc(n))
+
+# Display the final table:
+    
+Super3Pointers %>%
+    group_by(Player) %>%
+    mutate(Pos = getmode(NBA$Position[NBA$Player %in% Player]),
+           x3Pm = sum(NBA$X3P[NBA$Player %in% Player], na.rm = T),
+           x3Pa = sum(NBA$X3PA[NBA$Player %in% Player], na.rm = T),
+           "3P%" = round(x3Pm/x3Pa, 3),
+           Tokens = paste(strrep("|", n)),
+           TotalTokens = n) %>%
+    select(-"n") %>%
+    kable(escape = FALSE, caption = "The Most Prominent Three-Pointers") %>%
+    kable_styling(bootstrap_options = "striped", full_width = F, position = "center") %>%
+    column_spec(1, bold = T) %>%
+    column_spec(6, bold = T, color = "gold") %>%
+    column_spec(7, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r ThreePNames, fig.width = 8.8}
+Super3Pointers %>% wordcloud2(size=0.5, color='random-light', backgroundColor="black")
+```
+
+```{r All3PCareer, fig.width=9, fig.height=9}
+NBA %>%
+    filter(Player %in% Super3Pointers$Player) %>%
+    group_by(Age, Player) %>%
+    summarise(x3Pm = sum(X3P),
+              x3Pa = sum(X3PA),
+              x3P. = x3Pm/x3Pa) %>%
+    filter(x3P. < 0.7) %>%
+    ggplot(aes(Age, Player, fill=x3P.)) +
+    geom_tile(color = "grey50") +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_fill_gradientn(colors = brewer.pal(9, "Reds")) +
+    theme(panel.grid = element_blank()) +
+    scale_y_discrete(limits = rev(levels(Player))) +
+    ggtitle("All 3-Point Shooters Career Performance") +
+    theme(legend.position="bottom")
+```
+
+```{r threepratio1, fig.width=9}
+NBA %>%
+    filter(Year >= 1980 & X3P > 1) %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Position),
+              Team = getmode(Tm),
+              Games = sum(G),
+              Pts2 = sum(X2P) * 2,
+              Pts3 = sum(X3P) * 3,
+              PtsFT = sum(FT),
+              PTS = sum(PTS),
+              PPG = round(PTS / Games, 1),
+              Pts2r = round(Pts2 / PTS, 3),
+              Pts3r = round(Pts3 / PTS, 3),
+              PtsFTr = round(PtsFT / PTS, 3),
+              x3Pm = sum(X3P),
+              x3Pa = sum(X3PA),
+              x3P. = round(x3Pm / x3Pa, 3)) %>%
+    filter(x3Pm > 250) %>%
+    select(-c(x3Pm, x3Pa, Pts2:PtsFT)) %>%
+    arrange(desc(Pts3r)) %>%
+    mutate(Player = reorder(Player, Pts3r, FUN=mean)) %>%
+    head(10) %>%
+    gather(Parameter, Value, Pts2r:PtsFTr) %>%
+    ggplot(aes(Player, Value, fill=forcats::fct_rev(Parameter))) +
+    geom_bar( stat="identity", position="fill") +
+    geom_label(aes(label = paste(Value * 100, "%")),
+               stat = 'identity',
+               position = position_stack(vjust = 0.5),
+               fill = "#FF4000",
+               color = "#00FFFF",
+               size = 2.5) +
+    ggtitle("Highest 3-Points Ratio") +
+    coord_flip() +
+    xlab("") +
+    ylab("Shooting") +
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme(legend.position="bottom") +
+    theme(legend.title=element_blank())
+```
+
+```{r threepratio2, fig.width = 9}
+NBA %>%
+    filter(Year >= 1980 & Player %in% head(Super3Pointers$Player, 12)) %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              Games = sum(G),
+              Pts2 = sum(X2P) * 2,
+              Pts3 = sum(X3P) * 3,
+              PtsFT = sum(FT),
+              PTS = sum(PTS),
+              PPG = round(PTS / Games, 1),
+              Pts2r = round(Pts2 / PTS, 3),
+              Pts3r = round(Pts3 / PTS, 3),
+              PtsFTr = round(PtsFT / PTS, 3),
+              x3Pm = sum(X3P),
+              x3Pa = sum(X3PA),
+              x3P. = round(x3Pm / x3Pa, 3)) %>%
+    filter(x3Pm > 250, Player != c("Steve Novak", "Kyle Korver")) %>%
+    select(-c(x3Pm, x3Pa, Pts2:PtsFT)) %>%
+    arrange(desc(Pts3r)) %>%
+    mutate(Player = factor(Player, levels = c("Larry Bird", "B.J. Armstrong", "Dale Ellis", "Craig Hodges", "Tim Legler", "Peja Stojakovic", "Hubert Davis", "Steve Kerr", "Jason Kapono", "Stephen Curry"))) %>%
+    gather(Parameter, Value, Pts2r:PtsFTr) %>%
+    ggplot(aes(Player, Value, fill=forcats::fct_rev(Parameter))) +
+    geom_bar( stat="identity", position="fill") +
+    geom_label(aes(label = paste(Value * 100, "%")),
+               stat = 'identity',
+               position = position_stack(vjust = 0.5),
+               fill = "#FF4000",
+               color = "#00FFFF",
+               size = 2.5) +
+    ggtitle("Shooting Ratio of the Super3Pointers") +
+    coord_flip() +
+    xlab("") +
+    ylab("Shooting") +
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme(legend.position="bottom") +
+    theme(legend.title=element_blank())
+```
+
+```{r threeprate, fig.width = 9, warning=FALSE}
+x3PrateAVG <- NBA %>%
+    summarise(Player = "Average",
+              Games = sum(G, na.rm = T),
+              FGa = sum(FGA, na.rm = T),
+              x3Pa = sum(X3PA, na.rm = T),
+              FGapG = round(FGa / Games, 2),
+              x3PapG = round(x3Pa / Games, 2),
+              x3Pr = round(x3Pa / FGa, 3)) %>%
+    select(-c(Games, x3Pa, FGa))
+
+x3Prate <- NBA %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              Games = sum(G),
+              PTS = sum(PTS),
+              PPG = round(PTS / Games, 1),
+              FGa = sum(FGA),
+              x3Pa = sum(X3PA),
+              x3Pr = round(x3Pa / FGa, 3),
+              x3PapG = round(x3Pa / Games, 2),
+              FGapG = round(FGa / Games, 2)) %>%
+    filter(x3Pa > 250) %>%
+    mutate(Rank = min_rank(desc(x3Pr))) %>%
+    select(Rank, everything()) %>%
+    arrange(Rank) %>%
+    head(10) %>%
+    bind_rows(x3PrateAVG)
+
+LabelFix <- x3Prate %>%
+    mutate(x3PapG = x3PapG,
+           x3Pr = paste(x3Pr * 100, "%")) %>%
+    gather(Parameter, Count, x3PapG, -c(Player, x3Pr)) %>%
+    mutate(Player = factor(Player, levels = unique(Player[order(desc(x3Pr))])))
+
+x3Prate %>%
+    gather(Parameter, Count, FGapG:x3PapG, -c(Player, x3Pr)) %>%
+    mutate(Player = factor(Player, levels = unique(Player[order(desc(x3Pr))]))) %>%
+    ggplot(aes(Player, Count, fill = Parameter, label = x3Pr)) +
+    geom_bar(position="dodge", stat="identity") +
+    geom_label(aes(label = x3Pr, y = 0.7),
+              data = LabelFix,
+              stat = 'identity',
+              position = "stack",
+              fill = "#FFFFFF",
+              color = "#000000",
+              size = 4) +
+    ggtitle("3-Point Rate") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("") +
+    ylab("3P/FG per game") +
+    scale_fill_manual(name="", values=c("#0000FF", "#008000"),
+                       labels=c("FG per Game", "3P per Game")) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.position="bottom")
+    
+```
+
+```{r efg}
+NBA %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Games = sum(G),
+              PTS = sum(PTS),
+              x2Pm = sum(X2P),
+              x2Pa = sum(X2PA),
+              FGm = sum(FG),
+              FGa = sum(FGA),
+              x3Pm = sum(X3P, na.rm = T),
+              x3Pa = sum(X3PA, na.rm = T),
+              PPG = round(PTS/Games, 1),
+              x2P. = round(x2Pm/x2Pa, 3),
+              x3P. = round(x3Pm/x3Pa, 3),
+              eFG. = round((FGm + 0.5 * x3Pm) / FGa, 3)) %>%
+    filter(Games > 400) %>%
+    select(-c(PTS:x3Pa)) %>%
+    arrange(desc(eFG.)) %>%
+    head(20) %>%
+    mutate(Rank = min_rank(desc(eFG.))) %>%
+    select(Rank, everything()) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Effective Field Goal Percentage Leaders") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(10, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r EFG, fig.width=9, warning=FALSE}
+eFGLeaders <- NBA %>%
+    group_by(Player) %>%
+    summarise(Games = sum(G),
+              x2Px = round(sum(X2P) / sum(FGA), 3),
+              x3Px = round((sum(X3P, na.rm = T) * 1.5) / sum(FGA), 3),
+              FGax = round((sum(FGA) - (sum(X2P) + (sum(X3P, na.rm = T) * 1.5))) / sum(FGA), 3),
+              eFG. = round((sum(X2P) + sum(X3P, na.rm = T) * 1.5) / sum(FGA), 3)) %>%
+    filter(Games > 400) %>%
+    arrange(desc(eFG.)) %>%
+    head(20) %>%
+    mutate(Player = factor(Player, levels = unique(Player[order(desc(eFG.))]))) %>%
+    gather(Parameter, Value, x2Px:FGax, -c(Games))
+
+LabelFix1 <- eFGLeaders %>%
+    spread(Parameter, Value) %>%
+    mutate(eFG. = paste(eFG. * 100, "%"))
+
+eFGLeaders %>%
+    ggplot(aes(Player, Value, fill = Parameter)) + 
+    geom_bar(stat = 'identity') +
+    geom_text(aes(label = eFG., y = 0.95), size = 3) +
+    ggtitle("Effective Field Goal Percentage") +
+    theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+    xlab("") +
+    ylab("Percentage") +
+    scale_fill_manual(labels=c("Missed  ", "2P  ", "3P"), values=c("#0080FF", "#0000FF", "#008000")) +
+    theme(legend.title=element_blank()) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    theme(legend.position="bottom")
+```
+
+```{r sharpshooters}
+SharpestShooters <- NBA %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              x3Pm = sum(X3P, na.rm = T),
+              x3Pa = sum(X3PA, na.rm = T),
+              FTm = sum(FT, na.rm = T),
+              FTa = sum(FTA, na.rm = T),
+              x3P. = round(x3Pm/x3Pa, 3),
+              FT. = round(FTm/FTa, 3),
+              Shoot. = round((x3P. + FT.)/2, 3)) %>%
+    filter(x3Pa > 250 & FTa > 1000 & FT. > 0.85 & x3P. > 0.38) %>%
+    arrange(desc(Shoot.)) %>%
+    mutate(Rank = min_rank(desc(Shoot.))) %>%
+    select(Rank, everything(), -c(x3Pm:FTa)) %>%
+    head(20) %>%
+    mutate(Player = factor(Player, levels = unique(Player[order(desc(Shoot.))])))
+
+SharpestShooters %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Sharpest Shooters") %>%
+    kable_styling("striped", full_width = F, position = "float_left") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(6, bold = T, color = "white", background = "#777777")
+```
+
+```{r SHARPSHOOTERS, fig.width=9}
+SharpestShooters %>%
+    ggplot(aes(x3P., FT., size = Shoot., color=Pos, label=Player)) +
+    geom_point(shape=18) +
+    geom_text(size=3, color="#000000", position = position_nudge(y = -0.002)) +
+    scale_color_manual(values = c("#FFA500", "#DDDD00" ,"#0000FF", "#32CD32")) +
+    ggtitle("Sharpest Shooters") +
+    xlab("3P%") +
+    ylab("FT%") +
+    theme(legend.position='none')
+```

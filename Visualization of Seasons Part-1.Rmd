@@ -1,0 +1,822 @@
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr)
+library(tidyr)
+library(measurements)
+library(sqldf)
+library(ggplot2)
+library(RColorBrewer)
+library(plotly)
+library(ggridges)
+library(kableExtra)
+library(wordcloud2)
+library(forcats)
+```
+
+```{r processing}
+## Create additional functions
+
+# Mode average
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+convertHeight <- function(x) {
+    x <- as.character(x)
+    split <- strsplit(x, "-")
+    feet <- as.numeric(split[[1]][1])
+    inch <- as.numeric(split[[1]][2])
+    round(conv_unit(feet, "ft", "cm") + conv_unit(inch, "inch", "cm"),0)
+}
+
+# Load the data.
+
+NBA <- read.csv("NBA/Seasons_Stats.csv")[, c(2:9, 11:20, 32:53)]
+PlayerData <- read.csv("NBA/player_data.csv")[, c(1:3, 5:6)]
+
+# Remove NA rows
+NBA <- NBA %>% filter(!is.na(Year), !is.na(Player))
+
+# Remove Team = TOT (which indicates total, when player played in more than 1 team in a season)
+NBA <- NBA[NBA$Tm != "TOT",]
+
+# Remove of "*" which indicates a player is a member of NBA Hall of Fame
+NBA$Player <- gsub("\\*$", "", NBA$Player)
+
+# Fix player data
+PlayerData[2143, 4] = as.factor("6-2")
+PlayerData[2143, 5] = 190
+NBA[21304, 3] = "SG"
+
+#Renaming some columns of the dataset
+
+colnames(PlayerData) <- c("Name", "YearStart", "YearEnd", "Height-feet", "Weight-lbs")
+
+# Merging data
+
+NBA <- sqldf("SELECT * FROM NBA JOIN PlayerData ON NBA.Player = PlayerData.Name 
+      WHERE NBA.Year >= PlayerData.YearStart AND NBA.Year <= PlayerData.YearEnd")
+
+# Fixing Position
+
+# In here, for simplicity and aesthetical purpose, I arbitrarily framed up all the players into the standard five position used today and then color-coded them:
+
+NBA$Pos[NBA$Pos == "C-F"] <- "C"
+NBA$Pos[NBA$Pos == "F-C"] <- "PF"
+NBA$Pos[NBA$Pos == "F"] <- "PF"
+NBA$Pos[NBA$Pos == "F-G"] <- "SF"
+NBA$Pos[NBA$Pos == "G"] <- "SG"
+NBA$Pos[NBA$Pos == "G-F"] <- "SF"
+NBA$Pos <- factor(NBA$Pos, levels = c("C", "PF", "SF", "SG", "PG"))
+PosColorCode <- c("C"="#FF0000", "PF"="#FFA500", "SF"="#DDDD00" ,"SG"="#0000FF", "PG"="#32CD32")
+
+# Create new variables:
+
+NBA <- NBA %>%
+    mutate(Height = convertHeight(`Height-feet`),
+           Weight = round(conv_unit(`Weight-lbs`, "lbs", "kg"),0),
+           BMI = round(Weight / (Height / 100)^2, 2),
+           Born = Year - Age,
+           ORpG = ORB / G,
+           DRpG = DRB / G,
+           RpG = TRB / G,
+           ApG = AST / G,
+           SpG = STL / G,
+           BpG = BLK / G,
+           TpG = TOV / G,
+           PpG = PTS / G,
+           Position = cell_spec(Pos,
+                            color = "white",
+                            align = "c",
+                            background = factor(Pos, c("C", "PF", "SF", "SG", "PG"),
+                                                PosColorCode)))
+
+# Arrange the table.
+
+NBA <- NBA %>%
+    select(Year:MP, YearStart:BMI, "Born", FG:PTS, TS.:TOV., ORpG:PpG, "Position", -c("Height-feet", "Weight-lbs"))
+
+# Create duplicate table with normalized stats.
+
+NBA_Scaled <- NBA
+NBA_Scaled[, c(6:8, 15:54)] <- scale(NBA[, c(6:8, 15:54)])
+```
+
+```{r shootbypos, warning=FALSE}
+NBA %>%
+    group_by(Pos) %>%
+    summarise(FG2m = sum(X2P, na.rm=T),
+              FG2a = sum(X2PA, na.rm=T),
+              FG2. = round(FG2m/FG2a, 3),
+              FG3m = sum(X3P, na.rm=T),
+              FG3a = sum(X3PA, na.rm=T),
+              FG3. = round(FG3m/FG3a, 3),
+              FTm = sum(FT, na.rm=T),
+              FTa = sum(FTA, na.rm=T),
+              FT. = round(FTm/FTa, 3)) %>%
+    select(-c(FG2m:FG2a, FG3m:FG3a, FTm:FTa)) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, align = "c", caption = "Average Shooting Percentages by Position") %>%
+    kable_styling("striped", full_width = F, position = "float_left") %>%
+    column_spec(1:4, width = "5em")
+```
+
+```{r ShootDensitybyPos, fig.width = 9, fig.height = 7, warning=FALSE}
+NBA %>%
+    group_by(Pos, Player) %>%
+    summarise(FG2m = sum(X2P, na.rm=T),
+              FG2a = sum(X2PA, na.rm=T),
+              FG2. = round(FG2m/FG2a, 3),
+              FG3m = sum(X3P, na.rm=T),
+              FG3a = sum(X3PA, na.rm=T),
+              FG3. = round(FG3m/FG3a, 3),
+              FTm = sum(FT, na.rm=T),
+              FTa = sum(FTA, na.rm=T),
+              FT. = round(FTm/FTa, 3)) %>%
+    select(-c(FG2m:FG2a, FG3m:FG3a, FTm:FTa)) %>%
+    gather(Parameter, Pct, FG2.:FT., -c(Pos, Player)) %>%
+    ggplot(aes(Pct, Pos, fill=Parameter)) +
+    ggtitle("Shooting Percentage Density by Position") +
+    geom_density_ridges(alpha=0.25) +
+    scale_y_discrete(expand = c(0.01, 0), limits = rev(levels(NBA$Pos))) +
+    scale_x_continuous(expand = c(0, 0)) +
+    scale_fill_manual("Parameter", values = c("blue", "green", "red")) +
+    xlab("Percentage") +
+    ylab("Position") +
+    theme(legend.position="bottom")
+```
+
+```{r ShootPctbyYear, fig.width = 9, fig.height = 4.5, warning=FALSE}
+NBA %>%
+    group_by(Year) %>%
+    summarise(FG2m = sum(X2P, na.rm=T),
+              FG2a = sum(X2PA, na.rm=T),
+              FG2. = round(FG2m/FG2a, 3),
+              FG3m = sum(X3P, na.rm=T),
+              FG3a = sum(X3PA, na.rm=T),
+              FG3. = round(FG3m/FG3a, 3),
+              FTm = sum(FT, na.rm=T),
+              FTa = sum(FTA, na.rm=T),
+              FT. = round(FTm/FTa, 3)) %>%
+    select(-c(FG2m:FG2a, FG3m:FG3a, FTm:FTa)) %>%
+    gather(Parameter, Value, FG2.:FT., -Year) %>%
+    ggplot() +
+    geom_line(aes(Year, Value, group=Parameter, color=Parameter), size = 1.2, alpha = 1) +
+    ggtitle("Shooting Percentage by Year") +
+    scale_x_continuous(breaks = seq(1950, 2020, 10)) +
+    scale_color_manual("Parameter",
+                       values = c("blue", "green", "red"),
+                       labels = c("FG2%", "FG3%", "FT%")) +
+    guides(group=FALSE) +
+    theme(legend.position="bottom")
+```
+
+```{r HitMissbyPos, fig.width = 9, fig.height=4.5, warning=FALSE}
+NBA %>%
+    group_by(Pos) %>%
+    summarise(FG2m = sum(X2P, na.rm = T),
+              FG2a = sum(X2PA, na.rm = T) - FG2m,
+              FG3m = sum(X3P, na.rm = T),
+              FG3a = sum(X3PA, na.rm = T) - FG3m,
+              FTm = sum(FT, na.rm = T),
+              FTa = sum(FTA, na.rm = T) - FTm) %>%
+    gather(Parameter, Count, FG2m:FTa, -Pos) %>%
+    mutate(ShootType = as.factor(ifelse(Parameter %in% c("FG2m", "FG2a"), "FG2",
+                               ifelse(Parameter %in% c("FG3m", "FG3a"), "FG3",
+                                      "FT")))) %>%
+    group_by(Pos, ShootType) %>%
+    ggplot(aes(ShootType, Count, fill = Parameter)) + 
+    geom_bar(stat = 'identity', position = 'stack') +
+    facet_grid(~ Pos) +
+    ggtitle("Hit/Missed Shoots by Position") +
+    guides(fill=FALSE) +
+    scale_fill_manual(values=c("#7F7FFF", "#0000FF", "#66B266", "#008000", "#FF4C4C","#FF0000"))
+```
+
+```{r HitMissbyYear, warning=FALSE, fig.width=9, fig.height=4.5}
+HitMissFG2 <- NBA %>% group_by(Year) %>%
+    summarise(ShootType = "FG2",
+              Hit = sum(X2P, na.rm = T) / sum(G),
+              Miss = sum(X2PA, na.rm = T) / sum(G))
+HitMissFG3 <- NBA %>% group_by(Year) %>%
+    summarise(ShootType = "FG3",
+              Hit = sum(X3P, na.rm = T) / sum(G),
+              Miss = sum(X3PA, na.rm = T) / sum(G))
+HitMissFT <- NBA %>% group_by(Year) %>%
+    summarise(ShootType = "FT",
+              Hit = sum(FT, na.rm = T) / sum(G),
+              Miss = sum(FTA, na.rm = T) / sum(G))
+HitMissShot <- rbind(HitMissFG2, HitMissFG3, HitMissFT)
+
+HitMissShot %>%
+    ggplot(aes(x=Year,
+               y=Hit,
+               ymin=Hit,
+               ymax=Miss,
+               fill=ShootType,
+               color=ShootType)) + 
+    geom_line(size=2) + 
+    geom_ribbon(alpha=0.3) +
+    ylab("Hit / Missed Shots") +
+    scale_linetype_manual(name = "", values = c(1, 1, 1)) +
+    scale_color_manual(values=c("#0000FF", "#008000", "#FF0000")) +
+    theme(legend.position="bottom")
+```
+
+```{r topfg., warning=FALSE}
+TopFG. <- NBA %>%
+    filter(FG. > 0) %>%
+    group_by(Year, Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              Games = sum(G),
+              MPG = round(sum(MP)/Games, 1),
+              PPG = round(sum(PTS)/Games, 1),
+              FGm = sum(FG),
+              FGa = sum(FGA),
+              FG. = round(FGm/FGa, 3)) %>%
+    filter(ifelse(Year %in% c(1950:1951, 1961-1962), FGm >= 200,
+                             ifelse(Year %in% c(1952:1955, 1963-1964, 1966), FGm >= 210,
+                               ifelse(Year %in% 1956:1959, FGm >= 230,
+                                 ifelse(Year %in% 1960:1961, FGm >= 190,
+                                   ifelse(Year %in% c(1965, 1967:1968), FGm >= 220,
+                                     ifelse(Year %in% 1969, FGm >= 230,
+                                       ifelse(Year %in% 1970, Games >= 70 & FGa >= 700,
+                                         ifelse(Year %in% 1971:1972, FGa >= 700,
+                                           ifelse(Year %in% 1973:1974, FGa >= 560,
+                                             ifelse(Year %in% 1999, FGm >= 183,
+                                               ifelse(Year %in% 2012, FGm >= 241,
+                                                 FGm >= 300)))))))))))) %>%
+    group_by(Year) %>%
+    summarise(Player = Player[which.max(FG.)],
+              Team = Team[which.max(FG.)],
+              Pos = Pos[which.max(FG.)],
+              Games = Games[which.max(FG.)],
+              MPG = MPG[which.max(FG.)],
+              PPG = PPG[which.max(FG.)],
+              FGm = FGm[which.max(FG.)],
+              FGa = FGa[which.max(FG.)],
+              FG. = max(FG., na.rm = T)) %>%
+    arrange(desc(Year))
+
+TopFG.  %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Annual League Leaders Field Goals %") %>%
+    kable_styling("striped", "hover", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(10, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r TopFG., warning = FALSE, fig.width = 9}
+meanFG.Year <- NBA %>%
+    group_by(Year) %>%
+    filter(FG. > 0) %>%
+    summarise(FG. = sum(FG)/sum(FGA))
+
+TFG. <- TopFG. %>%
+    ggplot() +
+    geom_bar(aes(Year, FG., fill = Pos, text = paste("Player:", Player)), stat = "identity") +
+    geom_line(data=meanFG.Year, aes(Year, FG., linetype = "Average line"), color = "black") +
+    ggtitle("Annual Field Goal Percentage Leaders") +
+    geom_hline(yintercept = mean(TopFG.$FG.), col = "blue", alpha = 0.5) +
+    scale_x_continuous(breaks = seq(1950, 2017, 10)) +
+    scale_fill_manual("Pos", values = PosColorCode) +
+    theme(legend.position="none")
+
+pTFG <- ggplotly(TFG.)
+
+#api_create(pTFG, filename = "AnnualFG.Leaders")
+```
+
+```{r alltimefg., warning=FALSE}
+AllTimeFG. <- NBA %>%
+    filter(FG. > 0) %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Games = sum(G),
+              MPG = round(sum(MP) / Games, 1),
+              PPG = round(sum(PTS) / Games, 1),
+              FGm = sum(FG),
+              FGa = sum(FGA),
+              FG. = round(FGm/FGa, 3)) %>%
+    filter(FGm >= 2000) %>%
+    arrange(desc(FG.), desc(FGm)) %>%
+    mutate(Rank = min_rank(desc(FG.))) %>%
+    select(Rank, everything())
+
+AllTimeFG. %>%
+    head(n=10) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "All-Time Field Goals % Leaders") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(11, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r AllTimeFG., fig.width = 9}
+LabelFix <- AllTimeFG. %>%
+    head(10) %>%
+    mutate(Player = fct_reorder(Player, desc(FG.), fun=mean),
+           FGa = FGa-FGm,
+           FG. = paste(FG. * 100, "%")) %>%
+    gather(Parameter, Count, FGm:FGa, -c(Player, FG.)) %>%
+    filter(Parameter == "FGa")
+    
+AllTimeFG. %>%
+    head(10) %>%
+    mutate(Player = fct_reorder(Player, desc(FG.), fun=mean),
+           FGa = FGa-FGm) %>%
+    gather(Parameter, Count, FGm:FGa, -c(Player, FG.)) %>%
+    ggplot(aes(Player, Count, fill = Parameter)) + 
+    geom_bar(stat = 'identity', position = 'stack') +
+    geom_label(aes(label = FG.,
+                   y = 21000),
+               data = LabelFix,
+               stat = 'identity',
+               position = "stack",
+               fill = "#FF4000",
+               color = "#00FFFF",
+               size = 4.5) +
+    ggtitle("All-Time Field Goals Percentage Leaders") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    xlab("") +
+    scale_fill_manual(labels=c("FG-missed  ", "FG-made"), values=c("#7F7FFF", "#0000FF")) +
+    theme(legend.title=element_blank()) +
+    theme(legend.position="bottom")
+```
+
+```{r TopFG.Pos}
+TopFG.Pos <- AllTimeFG. %>%
+    group_by(Pos) %>%
+    summarise(Player = Player[which.max(FG.)],
+              Team = Team[which.max(FG.)],
+              ActiveYears = ActiveYears[which.max(FG.)],
+              Games = Games[which.max(FG.)],
+              MPG = MPG[which.max(FG.)],
+              PPG = PPG[which.max(FG.)],
+              FGm = FGm[which.max(FG.)],
+              FGa = FGa[which.max(FG.)],
+              FG. = FG.[which.max(FG.)])
+```
+
+```{r fgm36, warning=FALSE}
+AllTimeFGma <- NBA %>%
+    group_by(Player) %>%
+    filter(sum(G) >= 400) %>%
+    summarise(Pos = getmode(Position),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Games = sum(G),
+              Minutes = sum(MP),
+              MPG = round(Minutes / Games, 1),
+              PPG = round(sum(PTS)/sum(G), 1),
+              FGm_36 = round((sum(FG) / Minutes) * 36, 1),
+              FGm_G = round((sum(FG) / Games), 1),
+              FGa_36 = round((sum(FGA) / Minutes) *36, 1),
+              FGa_G = round((sum(FGA) / Games), 1),
+              FG. = round(sum(FG)/sum(FGA), 3)) %>%
+    select(-"Minutes")
+
+AllTimeFGma %>%
+    arrange(desc(FGm_36), desc(FG.)) %>%
+    head(n=10) %>%
+    mutate(Rank = min_rank(desc(FGm_36))) %>%
+    select(Rank, everything()) %>%
+    kable(escape = FALSE, caption = "Field Goals Made per 36 Minutes") %>%
+    kable_styling("striped", full_width = T, font_size = 11) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(c(2, 13), bold = T) %>%
+    column_spec(9, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r fga36, warning=FALSE}
+AllTimeFGma %>%
+    arrange(desc(FGa_36), desc(FG.)) %>%
+    head(n=10) %>%
+    mutate(Rank = min_rank(desc(FGa_36))) %>%
+    select(Rank, everything()) %>%
+    kable(escape = FALSE, caption = "Field Goal Attempts per 36 Minutes") %>%
+    kable_styling("striped", full_width = T,font_size = 11) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(c(2, 13), bold = T) %>%
+    column_spec(11, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r FG36, fig.width=9}
+AllTimeFGma %>%
+    arrange(desc(FGm_36), desc(FG.)) %>%
+    mutate(Player = reorder(Player, desc(FGm_36), FUN=mean)) %>%
+    head(n=10) %>%
+    ggplot(aes(group = 1)) +
+    geom_segment(aes(x=Player, xend=Player, y=FGm_36, yend=FGa_36), color="black") +
+    geom_point(aes(Player, FGm_36, color="#FF5800"), size=5) +
+    geom_point(aes(Player, FGa_36, color="#FF5800"), size=2.5) +
+    geom_point(aes(Player, FGm_G, color="#009dff"), size=5, shape=18) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ggtitle("FG Made per 36 Minutes vs. FG Made per Game") +
+    xlab("") +
+    ylab("FG Made") +
+    scale_color_manual(name="", values=c("#009dff", "#FF5800"),
+                       labels=c("FGm per Game", "FGa/m per 36 minutes"),
+                       guide = guide_legend(reverse=TRUE)) +
+    theme(legend.position='bottom')
+```
+
+```{r FGNames, fig.width = 8, fig.height=4}
+# Filter total Field Goals made with FG% > .55
+AllTimeFGm <- NBA %>%
+    group_by(Player) %>%
+    summarise(FGm = sum(FG),
+              FGa = sum(FGA),
+              FG. = FGm / FGa) %>%
+    filter(FG. > 0.55) %>%
+    arrange(desc(FGm)) %>% head(10)
+
+# Filter Field Goals made per 36 minutes with FG% > .55
+AllTimeFGm36 <- AllTimeFGma %>%
+    filter(FG. >= 0.55) %>%
+    arrange(desc(FGm_36)) %>%
+    head(n=10)
+
+NamesFG <- data.frame(Name = c(as.character(rep(TopFG.$Player, 2)),
+                               as.character(rep(head(AllTimeFG.$Player, 10), 2)),
+                               as.character(AllTimeFGm$Player),
+                               as.character(AllTimeFGm36$Player)))
+NamesFG %>% count(Name) %>% arrange(desc(n)) %>% 
+    wordcloud2(size=0.4, color='random-light', backgroundColor="black")
+```
+
+```{r annualft., warning=FALSE}
+TopFT. <- NBA %>%
+    filter(FT. > 0) %>%
+    group_by(Year, Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              Games = sum(G),
+              MPG = round(sum(MP)/Games, 1),
+              PPG = round(sum(PTS)/Games, 1),
+              FTm = sum(FT),
+              FTa = sum(FTA),
+              FT. = round(FTm/FTa, 3)) %>%
+    filter(ifelse(Year %in% 1950:1951, FTm >= 170,
+             ifelse(Year %in% 1952:1955, FTm >= 180,
+               ifelse(Year %in% 1956:1959, FTm >= 190,
+                 ifelse(Year %in% 1960, FTm >= 185,
+                   ifelse(Year %in% 1961:1962, FTm >= 200,
+                     ifelse(Year %in% 1963:1966, FTm >= 210,
+                       ifelse(Year %in% 1967:1968, FTm >= 220,
+                         ifelse(Year %in% 1969, FTm >= 230,
+                           ifelse(Year %in% 1970, Games >= 70 & FTa >= 350,
+                             ifelse(Year %in% 1971:1972, FTa >= 350,
+                               ifelse(Year %in% 1973:1974, FTa >= 160,
+                                 ifelse(Year %in% 1999, FTm >= 76,
+                                   ifelse(Year %in% 2012, FTm >= 100,
+                                     FTm >= 125)))))))))))))) %>%
+    group_by(Year) %>%
+    summarise(Player = Player[which.max(FT.)],
+              Team = Team[which.max(FT.)],
+              Pos = Pos[which.max(FT.)],
+              Games = Games[which.max(FT.)],
+              MPG = MPG[which.max(FT.)],
+              PPG = PPG[which.max(FT.)],
+              FTm = FTm[which.max(FT.)],
+              FTa = FTa[which.max(FT.)],
+              FT. = max(FT., na.rm = T)) %>%
+    arrange(desc(Year))
+
+TopFT. %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Annual Free Throws % League Leaders") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(10, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r AnnualFT., warning = FALSE, fig.width = 9}
+meanFT.Year <- NBA %>%
+    group_by(Year) %>%
+    filter(FT. > 0) %>%
+    summarise(FT. = sum(FT)/sum(FTA))
+
+TFT. <- TopFT. %>%
+    ggplot() +
+    geom_bar(aes(Year, FT., fill = Pos, text = paste("Player:", Player)), stat = "identity") +
+    geom_line(data=meanFT.Year, aes(Year, FT., linetype = "Average line"), color = "black") +
+    ggtitle("Annual Free Throws Percentage Leaders") +
+    geom_hline(yintercept = mean(TopFT.$FT.), col = "blue", alpha = 0.5) +
+    scale_x_continuous(breaks = seq(1950, 2020, 10)) +
+    scale_fill_manual("Pos", values = PosColorCode) +
+    theme(legend.position="none")
+
+pTFT. <- ggplotly(TFT.)
+```
+
+```{r alltimeft., warning=FALSE}
+AllTimeFT. <- NBA %>%
+    filter(FT. > 0) %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Games = sum(G),
+              MPG = round(sum(MP) / Games, 1),
+              PPG = round(sum(PTS) / Games, 1),
+              FTm = sum(FT),
+              FTa = sum(FTA),
+              FT. = round(FTm/FTa, 3)) %>%
+    filter(FTm >= 1200) %>%
+    arrange(desc(FT.), desc(FTm)) %>%
+    mutate(Rank = min_rank(desc(FT.))) %>%
+    select(Rank, everything())
+
+AllTimeFT. %>%
+    head(n=10) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "All-Time Free Throws % Leaders") %>%
+    kable_styling("striped", full_width = T) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(2, bold = T) %>%
+    column_spec(11, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r AllTimeFT., fig.width = 9}
+LabelFix <- AllTimeFT. %>%
+    head(10) %>%
+    mutate(Player = fct_reorder(Player, desc(FT.), fun=mean),
+           FTa = FTa-FTm,
+           FT. = paste(FT. * 100, "%")) %>%
+    gather(Parameter, Count, FTm:FTa, -c(Player, FT.)) %>%
+    filter(Parameter == "FTa")
+
+AllTimeFT. %>%
+    head(10) %>%
+    mutate(Player = fct_reorder(Player, desc(FT.), fun=mean),
+           FTa = FTa-FTm) %>%
+    gather(Parameter, Count, FTm:FTa, -c(Player, FT.)) %>%
+    ggplot(aes(Player, Count, fill = Parameter)) + 
+    geom_bar(stat = 'identity', position = 'stack') +
+    geom_label(aes(label = FT.,
+                   y = 7500),
+               data = LabelFix,
+               stat = 'identity',
+               position = "stack",
+               fill = "#FF4000",
+               color = "#00FFFF",
+               size = 4.5) +
+    ggtitle("All-Time Free Throws Percentage Leaders") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    xlab("") +
+    scale_fill_manual(labels=c("FT-missed  ", "FT-made"), values=c("#FF4C4C","#FF0000")) +
+    theme(legend.title=element_blank()) +
+    theme(legend.position="bottom")
+```
+
+```{r topft.pos}
+TopFT.Pos <- AllTimeFT. %>%
+    group_by(Pos) %>%
+    summarise(Player = Player[which.max(FT.)],
+              Team = Team[which.max(FT.)],
+              ActiveYears = ActiveYears[which.max(FT.)],
+              Games = Games[which.max(FT.)],
+              MPG = MPG[which.max(FT.)],
+              PPG = PPG[which.max(FT.)],
+              FTm = FTm[which.max(FT.)],
+              FTa = FTa[which.max(FT.)],
+              FT. = FT.[which.max(FT.)])
+```
+
+```{r ftm36, warning=FALSE}
+AllTimeFTma <- NBA %>%
+    group_by(Player) %>%
+    filter(sum(G) >= 400) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              ActiveYears = paste(getmode(YearStart), "-", getmode(YearEnd)),
+              Minutes = sum(MP),
+              Games = sum(G),
+              MPG = round(Minutes /sum(G), 1),
+              PPG = round(sum(PTS)/sum(G), 1),
+              FTm_36 = round((sum(FT) / Minutes) * 36, 1),
+              FTm_G = round(sum(FT) / Games, 1),
+              FTa_36 = round((sum(FTA) / Minutes) * 36, 1),
+              FTa_G = round(sum(FTA) / Games, 1),
+              FT. = round(sum(FT)/sum(FTA), 3)) %>%
+    select(-"Minutes")
+
+AllTimeFTma %>%
+    arrange(desc(FTm_36), desc(FT.)) %>%
+    head(n=10) %>%
+    mutate(Rank = min_rank(desc(FTm_36))) %>%
+    select(Rank, everything()) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Free Throw Made per 36 Minutes") %>%
+    kable_styling("striped", full_width = T, font_size = 11) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(c(2, 13), bold = T) %>%
+    column_spec(9, bold = T, color = "white", background = "#777777") %>%
+    column_spec(13, bold = T) %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r fta36, warning=FALSE}
+AllTimeFTma %>%
+    arrange(desc(FTa_36), desc(FT.)) %>%
+    head(n=10) %>%
+    mutate(Rank = min_rank(desc(FTa_36))) %>%
+    select(Rank, everything()) %>%
+    mutate(Pos = cell_spec(Pos, color = "white", align = "c", 
+                    background = factor(Pos, c("C", "PF", "SF", "SG", "PG"), 
+                                        PosColorCode))) %>%
+    kable(escape = FALSE, caption = "Free Throw Attempts per 36 Minutes") %>%
+    kable_styling("striped", full_width = T, font_size = 11) %>%
+    column_spec(1, bold = T, color = "yellow", background = "#FF0000") %>%
+    column_spec(c(2, 13), bold = T) %>%
+    column_spec(11, bold = T, color = "white", background = "#777777") %>%
+    column_spec(13, bold = T) %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r FT36, fig.width=9}
+AllTimeFTma %>%
+    arrange(desc(FTm_36), desc(FT.)) %>%
+    mutate(Player = reorder(Player, desc(FTm_36), FUN=mean)) %>%
+    head(n=10) %>%
+    ggplot(aes(group = 1)) +
+    geom_segment(aes(x=Player, xend=Player, y=FTm_36, yend=FTa_36), color="black") +
+    geom_point(aes(Player, FTm_36, color="#FF5800"), size=5) +
+    geom_point(aes(Player, FTa_36, color="#FF5800"), size=2.5) +
+    geom_point(aes(Player, FTm_G, color="#009dff"), size=5, shape=18) +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    ggtitle("Free Throw Made per 36 Minutes vs. Free Throw Made per Game") +
+    xlab("") +
+    ylab("FT Made") +
+    scale_color_manual(name="", values=c("#009dff", "#FF5800"),
+                       labels=c("FTm per Game", "FT a/m per 36 minutes"),
+                       guide = guide_legend(reverse=TRUE)) +
+    theme(legend.position='bottom')
+```
+
+```{r ftnames, warning=FALSE}
+AllTimeFTm <- NBA %>%
+    group_by(Player) %>%
+    summarise(FTm = sum(X3P),
+              FTa = sum(X3PA),
+              FT. = FTm / FTa) %>%
+    filter(FT. > 0.85) %>%
+    arrange(desc(FTm)) %>% head(10)
+
+AllTimeFTm36 <- AllTimeFTma %>%
+    filter(FT. >= 0.85) %>%
+    arrange(desc(FTm_36), desc(FT.)) %>%
+    head(n=10)
+
+SuperFreeThrowers <- data.frame(Player = c(as.character(TopFT.$Player),
+                               as.character(rep(head(AllTimeFT.$Player, 10), 2)),
+                               as.character(AllTimeFTm$Player),
+                               as.character(AllTimeFTm36$Player))) %>%
+    count(Player) %>%
+    arrange(desc(n))
+
+# Display the final result:
+SuperFreeThrowers %>%
+    group_by(Player) %>%
+    mutate(Pos = getmode(NBA$Position[NBA$Player %in% Player]),
+           FTm = sum(NBA$FT[NBA$Player %in% Player]),
+           FTa = sum(NBA$FTA[NBA$Player %in% Player]),
+           "FT%" = round(FTm/FTa, 3),
+           Tokens = paste(strrep("|", n)),
+           TotalTokens = n) %>%
+    select(-"n") %>%
+    kable(escape = FALSE, caption = "The Most Prominent Free-Throwers") %>%
+    kable_styling(bootstrap_options = "striped", full_width = F, position = "center") %>%
+    column_spec(1, bold = T) %>%
+    column_spec(6, bold = T, color = "gold") %>%
+    column_spec(7, bold = T, color = "white", background = "#777777") %>%
+    scroll_box(width = "100%", height = "300px")
+```
+
+```{r FTNames, fig.width = 9, include=FALSE}
+SuperFreeThrowers %>% wordcloud2(size=0.4, color='random-light', backgroundColor="black")
+```
+
+```{r FTRatio, fig.width=9, warning=FALSE}
+NBA %>%
+    filter(FT > 1) %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Position),
+              Team = getmode(Tm),
+              Games = sum(G),
+              Pts2 = sum(X2P) * 2,
+              Pts3 = sum(X3P, na.rm = T) * 3,
+              PtsFT = sum(FT),
+              PTS = sum(PTS),
+              PPG = round(PTS / Games, 1),
+              Pts2r = round(Pts2 / PTS, 3),
+              Pts3r = round(Pts3 / PTS, 3),
+              PtsFTr = round(PtsFT / PTS, 3),
+              FTm = sum(FT),
+              FTa = sum(FTA),
+              FT. = round(FTm / FTa, 3)) %>%
+    filter(FTm > 1200) %>%
+    select(-c(FTm, FTa, Pts2:PtsFT)) %>%
+    arrange(desc(PtsFTr)) %>%
+    mutate(Player = reorder(Player, PtsFTr, FUN=mean)) %>%
+    head(10) %>%
+    gather(Parameter, Value, Pts2r:PtsFTr) %>%
+    ggplot(aes(Player, Value, fill=forcats::fct_rev(Parameter))) +
+    geom_bar( stat="identity", position="fill") +
+    geom_label(aes(label = paste(Value * 100, "%")),
+               stat = 'identity',
+               position = position_stack(vjust = 0.5),
+               fill = "#FF4000",
+               color = "#00FFFF",
+               size = 2.5) +
+    ggtitle("Highest Free Throw Ratio") +
+    coord_flip() +
+    xlab("") +
+    ylab("Shooting") +
+    guides(fill = guide_legend(reverse = TRUE)) +
+    theme(legend.position="bottom") +
+    theme(legend.title=element_blank())
+```
+
+```{r FTRate, fig.width = 9}
+FTrateAVG <- NBA %>%
+    summarise(Player = "Average",
+              Games = sum(G, na.rm = T),
+              FTa = sum(FTA, na.rm = T),
+              FGa = sum(FGA, na.rm = T),
+              FTapG = round(FTa / Games, 2),
+              FGapG = round(FGa / Games, 2),
+              FTr = round(FTa / FGa, 3)) %>%
+    select(-c(Games, FGa, FTa))
+
+FTrate <- NBA %>%
+    group_by(Player) %>%
+    summarise(Pos = getmode(Pos),
+              Team = getmode(Tm),
+              Games = sum(G),
+              PTS = sum(PTS),
+              PPG = round(PTS / Games, 1),
+              FGa = sum(FGA),
+              FTa = sum(FTA),
+              FTr = round(FTa / FGa, 3),
+              FTapG = round(FTa / Games, 2),
+              FGapG = round(FGa / Games, 2)) %>%
+    filter(FTa > 1200) %>%
+    mutate(Rank = min_rank(desc(FTr))) %>%
+    select(Rank, everything()) %>%
+    arrange(Rank) %>%
+    head(10) %>%
+    bind_rows(FTrateAVG)
+LabelFix <- FTrate %>%
+    mutate(FTapG = FTapG,
+           FTr = paste(FTr * 100, "%")) %>%
+    gather(Parameter, Count, FTapG, -c(Player, FTr)) %>%
+    mutate(Player = factor(Player, levels = unique(Player[order(desc(FTr))])))
+
+FTrate %>%
+    gather(Parameter, Count, FGapG:FTapG, -c(Player, FTr)) %>%
+    mutate(Player = factor(Player, levels = unique(Player[order(desc(FTr))]))) %>%
+    ggplot(aes(Player, Count, fill = Parameter, label = FTr)) +
+    geom_bar(position="dodge", stat="identity") +
+    geom_label(aes(label = FTr, y = 0.7),
+              data = LabelFix,
+              stat = 'identity',
+              position = "stack",
+              fill = "#FFFFFF",
+              color = "#000000",
+              size = 4) +
+    ggtitle("Free Throw Rate") +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    xlab("") +
+    ylab("FT/FG per game") +
+    scale_fill_manual(name="", values=c("#0000FF", "#FF0000"),
+                       labels=c("FG per Game", "FT per Game")) +
+    theme(legend.position="bottom")
+    
+```
